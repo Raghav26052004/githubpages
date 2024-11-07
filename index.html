@@ -1,140 +1,174 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CT Scan Images</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.js"></script>
-    <link rel="stylesheet" href="styles.css">
+    <script src="./libs/d3.js"></script>
+    <script src="./libs/d3jstopojson.v1.js"></script>
+    <title>MA Map</title>
+    <style>
+        #tooltip {
+            position: absolute;
+            opacity: 0;
+            top: 0;
+            left: 0;
+            width: auto;
+            padding: 10px;
+            background: white;
+            font-family: sans-serif;
+            font-size: medium;
+            border-radius: 2px;
+            line-height: 1;
+            pointer-events: none;
+        }
+
+        path {
+            stroke-width: 0.5px;
+            stroke: black;
+        }
+
+        path:hover {
+            opacity: 0.6;
+            stroke: black;
+            stroke-width: 4px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
 </head>
+
 <body>
-<div class="container">
-    <div>
-        <h1>CT Scan Images</h1>
-    </div>
-    <div class="slider">
-        <label for="binCount">Bin Count</label>
-        <input type="range" id="binCount" min="2" max="20" value="10" step="1" />
-
-        <label for="minThreshold">Min Threshold</label>
-        <input type="range" id="minThreshold" min="0" max="100" value="0" />
-
-        <label for="maxThreshold">Max Threshold</label>
-        <input type="range" id="maxThreshold" min="0" max="1000" value="300" />
+    <div id="tooltip"></div>
+    <div class="container">
+        <h1>Geospatial Analysis of Massachusetts</h1>
+        <h3>By Raghavandra Gudibandi</h3>
+        <div class="fig1"></div>
+        <div class="fig2"></div>
+        <div class="fig3"></div>
     </div>
 
-    <hr />
-    <div id="loading">
-        <div class="spinner"></div>
-        Loading...
-    </div>
-    <div class="main">
-        <div id="files_container">
-            <select id="files" name="file" size="10" multiple="multiple"></select>
-        </div>
-        <div class="canvas">
-            <svg viewBox="-5 -10 270 270"></svg>
-        </div>
-    </div>
-</div>
+    <script>
+        const window_dims = {
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
 
-<script>
-    const svg = d3.select("svg");
-    const path = d3.geoPath();
-    let currentBinCount = document.querySelector("#binCount").value;
-    let currentMin = document.querySelector("#minThreshold").value;
-    let currentMax = document.querySelector("#maxThreshold").value;
+        const svgWidth = Math.min(window_dims.width * 0.9, 600);
+        const svgHeight = svgWidth / 1.5;
 
-    let minValue, maxValue; 
+        const MA_counties = "./data/towns.topojson";
+        const gini_index = "./data/gini_index.csv";
 
-    function plot_contour(fileNumber) {
-        d3.json("dicomData/" + fileNumber).then(data => {
-            d3.select("svg").selectAll("*").remove();
-            let m = 256, n = 256;
+        // Function to generate each map
+        function generateMap(containerName, dataKey, colorScale, tooltipCallback, geojson) {
+            const svg = d3.select(containerName).append("svg")
+                .attr("width", svgWidth)
+                .attr("height", svgHeight);
 
-            let values_density = [];
-            data.forEach(col => col.forEach(d => values_density.push(+d)));
+            const geoPath = d3.geoPath().projection(d3.geoMercator().fitSize([svgWidth - 30, svgHeight - 30], geojson));
 
-            const min_max = d3.extent(values_density, d => d);
-            minValue = min_max[0];
-            maxValue = min_max[1];
+            svg.selectAll("path")
+                .data(geojson.features)
+                .enter()
+                .append("path")
+                .attr("d", geoPath)
+                .attr("fill", d => {
+                    const value = +d.properties[dataKey];
+                    return isNaN(value) ? "#ccc" : colorScale(value);
+                })
+                .attr("aria-label", d => `Map for ${d.properties.TOWN || d.properties.COUNTY} - ${dataKey}`)
+                .on("mouseenter", (event, d) => {
+                    tooltipCallback(event, d);
+                })
+                .on("mouseleave", () => {
+                    d3.select("#tooltip").style("opacity", 0);
+                });
+        }
 
-            document.querySelector("#minThreshold").min = minValue;
-            document.querySelector("#minThreshold").max = maxValue;
+        // Load data and generate maps
+        Promise.all([
+            d3.json(MA_counties),
+            d3.csv(gini_index)
+        ]).then(data => {
+            const topoData = data[0];
+            const giniData = data[1];
 
-            document.querySelector("#maxThreshold").min = minValue;
-            document.querySelector("#maxThreshold").max = maxValue;
+            const geojson = topojson.feature(topoData, topoData.objects.ma);
 
-            
-            function draw(binCount, minThreshold, maxThreshold) {
-    const colors = d3.scaleLinear()
-        .domain([minThreshold, minThreshold + (maxThreshold - minThreshold) * 0.2, 
-                 minThreshold + (maxThreshold - minThreshold) * 0.5, 
-                 minThreshold + (maxThreshold - minThreshold) * 0.8, maxThreshold])
-        .range(["#0d1a50", "#2b83ba", "#abdda4", "#fdae61", "#d7191c"]) // Dark blue to teal to light green to orange to red
-        .interpolate(d3.interpolateHcl);
+            const getColorScale = (dataKey, colorScheme) => {
+                return d3.scaleLinear()
+                    .domain(d3.extent(geojson.features, d => {
+                        const value = +d.properties[dataKey];
+                        return isNaN(value) ? 0 : value;
+                    }))
+                    .range(colorScheme);
+            };
 
-    let contours = d3.contours()
-        .size([m, n])
-        .thresholds(d3.range(minThreshold, maxThreshold, (maxThreshold - minThreshold) / binCount))
-        (values_density);
-
-    svg.append("g")
-        .attr("class", "contours")
-        .selectAll("path")
-        .data(contours)
-        .enter()
-        .append("path")
-        .attr("d", function(d) { return path(d); })
-        .attr("stroke", "black")
-        .attr("stroke-width", ".1px")
-        .attr("stroke-linejoin", "round")
-        .attr("fill", d => colors(d.value));
-}
-
-
-
-            draw(currentBinCount, currentMin, currentMax);
-
-            document.addEventListener("input", e => {
-                currentBinCount = +document.querySelector("#binCount").value;
-                currentMin = +document.querySelector("#minThreshold").value;
-                currentMax = +document.querySelector("#maxThreshold").value;
-
-                const tagId = e.target.id;
-                if(tagId === "binCount" || tagId === "minThreshold" || tagId === "maxThreshold") {
-                    draw(currentBinCount, currentMin, currentMax);
-                }
+            // Map Gini Index by FIPS code, following the friend's approach
+            const giniMap = new Map();
+            giniData.forEach(row => {
+                const fipsCode = row["id"].replace("0500000US", "").trim();
+                const giniValue = +row["Estimate!!Gini Index"];
+                giniMap.set(fipsCode, giniValue);
             });
+
+            // Add Gini Index to TopoJSON features using FIPS
+            topoData.objects.ma.geometries.forEach(d => {
+                const fipsCode = d.properties.FIPS_STCO.toString().trim();
+                d.properties.GiniIndex = giniMap.get(fipsCode) || "Data not available";
+            });
+
+            // MAP A: Population in 1980
+            const colorScaleA = getColorScale("POP1980", ["#f7fbff", "#08306b"]);
+            generateMap(".fig1", "POP1980", colorScaleA, (event, d) => {
+                const population1980 = d.properties.POP1980 || "Data not available";
+                d3.select("#tooltip")
+                    .style("opacity", 1)
+                    .style("left", `${Math.min(event.pageX + 5, window_dims.width - 150)}px`)
+                    .style("top", `${Math.min(event.pageY - 28, window_dims.height - 50)}px`)
+                    .html(`<strong>Town:</strong> ${d.properties.TOWN || d.properties.COUNTY}<br><strong>Population 1980:</strong> ${population1980}`);
+            }, geojson);
+
+            // MAP B: Population Change 1980-2010
+            geojson.features.forEach(d => {
+                const pop1980 = +d.properties.POP1980 || 0;
+                const pop2010 = +d.properties.POP2010 || 0;
+                d.properties.POPCHANGE = pop2010 - pop1980;
+            });
+            const colorScaleB = getColorScale("POPCHANGE", ["#fee5d9", "#a50f15"]);
+            generateMap(".fig2", "POPCHANGE", colorScaleB, (event, d) => {
+                const popChange = d.properties.POPCHANGE || "Data not available";
+                d3.select("#tooltip")
+                    .style("opacity", 1)
+                    .style("left", `${Math.min(event.pageX + 5, window_dims.width - 150)}px`)
+                    .style("top", `${Math.min(event.pageY - 28, window_dims.height - 50)}px`)
+                    .html(`<strong>Town:</strong> ${d.properties.TOWN || d.properties.COUNTY}<br><strong>Population Change:</strong> ${popChange}`);
+            }, geojson);
+
+            // MAP C: Gini Index 2019
+            const colorScaleC = getColorScale("GiniIndex", ["#edf8e9", "#006d2c"]);
+            generateMap(".fig3", "GiniIndex", colorScaleC, (event, d) => {
+                const gini2019 = d.properties.GiniIndex !== "Data not available" ? d.properties.GiniIndex : "Data not available";
+                d3.select("#tooltip")
+                    .style("opacity", 1)
+                    .style("left", `${Math.min(event.pageX + 5, window_dims.width - 150)}px`)
+                    .style("top", `${Math.min(event.pageY - 28, window_dims.height - 50)}px`)
+                    .html(`<strong>County:</strong> ${d.properties.TOWN || d.properties.COUNTY}<br><strong>Gini Index 2019:</strong> ${gini2019}`);
+            }, geojson);
+        }).catch(error => {
+            console.error("Error loading data:", error);
+            d3.select(".container")
+                .append("p")
+                .text("Failed to load data. Please check the file paths.");
         });
-    }
-
-    function filesList() {
-        const files_data = [
-            "brain_001.dcm.json", "brain_002.dcm.json", "brain_003.dcm.json", "brain_004.dcm.json",
-            "brain_005.dcm.json", "brain_006.dcm.json", "brain_007.dcm.json", "brain_008.dcm.json",
-            "brain_009.dcm.json", "brain_010.dcm.json", "brain_011.dcm.json", "brain_012.dcm.json",
-            "brain_013.dcm.json", "brain_014.dcm.json", "brain_015.dcm.json", "brain_016.dcm.json",
-            "brain_017.dcm.json", "brain_018.dcm.json", "brain_019.dcm.json", "brain_020.dcm.json"
-        ];
-        const selectElement = d3.select("#files");
-        selectElement.selectAll("option")
-            .data(files_data)
-            .enter()
-            .append("option")
-            .text(d => d);
-
-        selectElement.on("change", () => {
-            const selectedOption = selectElement.property("value");
-            plot_contour(selectedOption);
-        });
-
-        selectElement.attr("size", files_data.length);
-    }
-
-    filesList();
-    plot_contour("brain_001.dcm.json");
-
-</script>
+    </script>
 </body>
+
 </html>
